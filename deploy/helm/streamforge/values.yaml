@@ -1,0 +1,72 @@
+# Assumes externally operated HA Kafka/PostgreSQL and externally managed secrets.
+# Use an immutable release tag; `latest` is intentionally rejected.
+image:
+  repository: ghcr.io/example/streamforge
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+externalSecrets:
+  database: {name: streamforge-database, key: url}
+  kafka:
+    name: streamforge-kafka
+    brokersKey: brokers
+    tlsEnabledKey: tls-enabled
+    tlsServerNameKey: tls-server-name
+    saslMechanismKey: sasl-mechanism
+    saslUsernameKey: sasl-username
+    saslPasswordKey: sasl-password
+  kafkaTLS: {name: streamforge-kafka-tls, caKey: ca.pem, certKey: tls.crt, keyKey: tls.key}
+
+dataset:
+  # Replace this complete, pinned package for a real deployment.
+  config: |
+    apiVersion: streamforge.dev/v1alpha1
+    kind: Dataset
+    metadata: {name: sample-events, version: 1.0.0}
+    collector: {type: http-json, httpJson: {url: https://example.invalid/events, pollInterval: 30s, requestTimeout: 10s, maxBodyBytes: 1048576}}
+    normalization:
+      revision: sample-events-normalization-v1
+      key: id
+      fields: [{source: id, target: id}]
+    schemas:
+      raw: {path: schemas/raw.schema.json, revision: raw-v1, digest: 84f660ec1b9fdebb846d32e4616e300a35046f907d67a159f7518a455b202949}
+      normalized: {path: schemas/normalized.schema.json, revision: normalized-v1, digest: 3f2a59ccfbee8476edc44b6f95a28a1f07af014f7702eae4776a11e1d96e439b}
+    storage: {engine: postgres}
+    api: {enabled: true, path: /v1/sample-events, fields: [id], filters: [], sorts: [], pagination: {type: cursor, default: 20, maximum: 100}}
+  rawSchema: |
+    {"type":"object","required":["id","category","value"],"properties":{"id":{"type":"string","minLength":1},"category":{"type":"string","minLength":1},"value":{"type":"number"}},"additionalProperties":true}
+  normalizedSchema: |
+    {"type":"object","required":["id","category","value"],"properties":{"id":{"type":"string","minLength":1},"category":{"type":"string","minLength":1},"value":{"type":"number"}},"additionalProperties":false}
+
+podSecurityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+  seccompProfile: {type: RuntimeDefault}
+terminationGracePeriodSeconds: 45
+podDisruptionBudget: {enabled: true, minAvailable: 1}
+
+collector: {replicas: 1, resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: 500m, memory: 256Mi}}}
+processor:
+  replicas: 2
+  resources: {requests: {cpu: 250m, memory: 256Mi}, limits: {cpu: "1", memory: 512Mi}}
+  autoscaling: {enabled: false, minReplicas: 2, maxReplicas: 10, targetCPUUtilizationPercentage: 70}
+sink:
+  replicas: 2
+  resources: {requests: {cpu: 250m, memory: 256Mi}, limits: {cpu: "1", memory: 512Mi}}
+  autoscaling: {enabled: false, minReplicas: 2, maxReplicas: 10, targetCPUUtilizationPercentage: 70}
+dlqIndexer: {replicas: 1, resources: {requests: {cpu: 100m, memory: 192Mi}, limits: {cpu: 500m, memory: 384Mi}}}
+replay:
+  replicas: 1
+  workerID: streamforge-replay
+  resources: {requests: {cpu: 100m, memory: 192Mi}, limits: {cpu: 500m, memory: 384Mi}}
+query:
+  replicas: 1 # built-in quotas are process-local; use a distributed gateway before scaling.
+  service: {type: ClusterIP, port: 8080, metricsPort: 9090}
+  resources: {requests: {cpu: 100m, memory: 192Mi}, limits: {cpu: 500m, memory: 384Mi}}
+providerAdmin:
+  replicas: 1
+  service: {type: ClusterIP, port: 8081}
+  clusterID: default
+  resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: 500m, memory: 256Mi}}

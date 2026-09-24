@@ -1,0 +1,6 @@
+apiVersion: v2
+name: streamforge
+description: Production-oriented StreamForge data pipeline chart
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

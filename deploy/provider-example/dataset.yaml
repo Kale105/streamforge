@@ -1,0 +1,45 @@
+apiVersion: streamforge.dev/v1alpha1
+kind: Dataset
+metadata:
+  name: sample-events
+  version: 1.0.0
+collector:
+  type: http-json
+  httpJson:
+    # The Compose fake source is intentionally local. Replace this URL for a real collector.
+    url: http://fake-source:8090/events/latest
+    pollInterval: 5s
+    requestTimeout: 3s
+    maxBodyBytes: 1048576
+normalization:
+  # Change this immutable revision whenever the mapping changes.
+  revision: sample-events-normalization-v1
+  key: id
+  fields:
+    - source: id
+      target: id
+    - source: category
+      target: category
+    - source: value
+      target: value
+schemas:
+  raw:
+    path: raw.schema.json
+    revision: sample-events-raw-v1
+    digest: 84f660ec1b9fdebb846d32e4616e300a35046f907d67a159f7518a455b202949
+  normalized:
+    path: normalized.schema.json
+    revision: sample-events-normalized-v1
+    digest: 3f2a59ccfbee8476edc44b6f95a28a1f07af014f7702eae4776a11e1d96e439b
+storage:
+  engine: postgres
+api:
+  enabled: true
+  path: /v1/sample-events
+  fields: [id, category, value]
+  filters: []
+  sorts: []
+  pagination:
+    type: cursor
+    default: 20
+    maximum: 100

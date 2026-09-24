@@ -1,0 +1,33 @@
+apiVersion: streamforge.dev/v1alpha1
+kind: Dataset
+metadata:
+  name: sample-events
+  version: 1.0.0
+collector:
+  type: http-json
+  httpJson:
+    url: http://fake-source:8090/events/latest
+    pollInterval: 5s
+    requestTimeout: 3s
+    maxBodyBytes: 1048576
+normalization:
+  key: id
+  fields:
+    - source: id
+      target: id
+    - source: category
+      target: category
+    - source: value
+      target: value
+storage:
+  engine: postgres
+api:
+  enabled: true
+  path: /v1/sample-events
+  fields: [id, category, value]
+  filters: []
+  sorts: []
+  pagination:
+    type: cursor
+    default: 20
+    maximum: 100

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["image", "externalSecrets", "dataset", "terminationGracePeriodSeconds"],
+  "properties": {
+    "image": {
+      "type": "object", "required": ["repository", "tag"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "minLength": 1, "not": {"const": "latest"}}
+      }
+    },
+    "externalSecrets": {
+      "type": "object", "required": ["database", "kafka", "kafkaTLS"],
+      "properties": {
+        "database": {"$ref": "#/definitions/secretRef"},
+        "kafka": {"type": "object", "required": ["name", "brokersKey", "tlsEnabledKey", "tlsServerNameKey", "saslMechanismKey", "saslUsernameKey", "saslPasswordKey"]},
+        "kafkaTLS": {"type": "object", "required": ["name", "caKey", "certKey", "keyKey"]}
+      }
+    },
+    "dataset": {"type": "object", "required": ["config", "rawSchema", "normalizedSchema"]},
+    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 1}
+  },
+  "definitions": {
+    "secretRef": {"type": "object", "required": ["name", "key"], "properties": {"name": {"type": "string", "minLength": 1}, "key": {"type": "string", "minLength": 1}}}
+  }
+}

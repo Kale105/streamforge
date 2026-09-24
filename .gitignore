@@ -1,0 +1,19 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Go build and test output
+/bin/
+/dist/
+/.gocache*/
+*.test
+*.out
+coverage.*
+
+# Local data and editor/OS files
+/data/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

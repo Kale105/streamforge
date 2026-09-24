@@ -1,0 +1,301 @@
+# Single-host, single-broker provider-mode development demonstration.
+# It is not HA and must never be used as a production topology. Set a unique
+# STREAMFORGE_DB_PASSWORD before starting this local stack.
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      POSTGRES_DB: streamforge
+      POSTGRES_USER: streamforge
+      POSTGRES_PASSWORD: ${STREAMFORGE_DB_PASSWORD:?Set STREAMFORGE_DB_PASSWORD}
+    volumes:
+      - provider-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U streamforge -d streamforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.2
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command:
+      - redpanda
+      - start
+      - --kafka-addr
+      - internal://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --default-log-level=info
+    volumes:
+      - provider-redpanda:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health --brokers=localhost:9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  topic-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.2
+    restart: "no"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        rpk topic create --if-not-exists -X brokers=redpanda:9092 -p 6 -r 1 -c cleanup.policy=delete -c retention.ms=604800000 -c compression.type=zstd -c max.message.bytes=2097152 streamforge.sample-events.raw
+        rpk topic create --if-not-exists -X brokers=redpanda:9092 -p 6 -r 1 -c cleanup.policy=delete -c retention.ms=259200000 -c compression.type=zstd -c max.message.bytes=2097152 streamforge.sample-events.normalized.92521fc3cbd9
+        rpk topic create --if-not-exists -X brokers=redpanda:9092 -p 3 -r 1 -c cleanup.policy=delete -c retention.ms=2592000000 -c compression.type=zstd -c max.message.bytes=2097152 streamforge.sample-events.dlq.92521fc3cbd9
+        rpk topic create --if-not-exists -X brokers=redpanda:9092 -p 3 -r 1 -c cleanup.policy=delete -c retention.ms=2592000000 -c compression.type=zstd -c max.message.bytes=2097152 streamforge.sample-events.raw.replay.92521fc3cbd9
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  fake-source:
+    build: .
+    entrypoint: ["fakesource"]
+    user: streamforge
+    restart: unless-stopped
+    stop_grace_period: 15s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8090/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+
+  collector:
+    build: .
+    command: ["worker", "collector", "-config", "/config/dataset.yaml", "-database-url", "postgres://streamforge:${STREAMFORGE_DB_PASSWORD:?Set STREAMFORGE_DB_PASSWORD}@postgres:5432/streamforge?sslmode=disable", "-admin-addr", ":8081"]
+    environment:
+      STREAMFORGE_KAFKA_BROKERS: redpanda:9092
+    volumes:
+      - ./deploy/provider-example:/config:ro
+    user: streamforge
+    restart: unless-stopped
+    stop_grace_period: 45s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8081/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      topic-init:
+        condition: service_completed_successfully
+      fake-source:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 192M
+
+  processor:
+    build: .
+    command: ["worker", "processor", "-config", "/config/dataset.yaml", "-admin-addr", ":8081"]
+    environment:
+      STREAMFORGE_KAFKA_BROKERS: redpanda:9092
+    volumes:
+      - ./deploy/provider-example:/config:ro
+    user: streamforge
+    restart: unless-stopped
+    stop_grace_period: 45s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8081/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      topic-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 256M
+
+  sink:
+    build: .
+    command: ["worker", "sink", "-config", "/config/dataset.yaml", "-database-url", "postgres://streamforge:${STREAMFORGE_DB_PASSWORD:?Set STREAMFORGE_DB_PASSWORD}@postgres:5432/streamforge?sslmode=disable", "-admin-addr", ":8081"]
+    environment:
+      STREAMFORGE_KAFKA_BROKERS: redpanda:9092
+    volumes:
+      - ./deploy/provider-example:/config:ro
+    user: streamforge
+    restart: unless-stopped
+    stop_grace_period: 45s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8081/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      topic-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 256M
+
+  # Persists Kafka DLQ messages before an operator can inspect or replay them.
+  dlq-indexer:
+    build: .
+    command: ["worker", "dlq-indexer", "-config", "/config/dataset.yaml", "-database-url", "postgres://streamforge:${STREAMFORGE_DB_PASSWORD:?Set STREAMFORGE_DB_PASSWORD}@postgres:5432/streamforge?sslmode=disable", "-admin-addr", ":8081"]
+    environment:
+      STREAMFORGE_KAFKA_BROKERS: redpanda:9092
+    volumes:
+      - ./deploy/provider-example:/config:ro
+    user: streamforge
+    restart: unless-stopped
+    stop_grace_period: 45s
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8081/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      postgres: {condition: service_healthy}
+      redpanda: {condition: service_healthy}
+      topic-init: {condition: service_completed_successfully}
+    deploy:
+      resources:
+        limits: {cpus: "0.50", memory: 256M}
+
+  # Claims audited replay requests from PostgreSQL and republishes them safely.
+  replay:
+    build: .
+    command: ["worker", "replay", "-config", "/config/dataset.yaml", "-database-url", "postgres://streamforge:${STREAMFORGE_DB_PASSWORD:?Set STREAMFORGE_DB_PASSWORD}@postgres:5432/streamforge?sslmode=disable", "-worker-id", "compose-replay-1", "-admin-addr", ":8081"]
+    environment:
+      STREAMFORGE_KAFKA_BROKERS: redpanda:9092
+    volumes:
+      - ./deploy/provider-example:/config:ro
+    user: streamforge
+    restart: unless-stopped
+    stop_grace_period: 45s
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8081/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      postgres: {condition: service_healthy}
+      redpanda: {condition: service_healthy}
+      topic-init: {condition: service_completed_successfully}
+    deploy:
+      resources:
+        limits: {cpus: "0.50", memory: 256M}
+
+  query:
+    build: .
+    command: ["query", "-config", "/config/dataset.yaml", "-database-url", "postgres://streamforge:${STREAMFORGE_DB_PASSWORD:?Set STREAMFORGE_DB_PASSWORD}@postgres:5432/streamforge?sslmode=disable", "-listen", ":8080", "-metrics-listen", ":9090", "-require-api-key=true"]
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/provider-example:/config:ro
+    user: streamforge
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 192M
+
+  # Provider administration is intentionally isolated from the public query API.
+  provider-admin:
+    build: .
+    command: ["provider-admin", "-database-url", "postgres://streamforge:${STREAMFORGE_DB_PASSWORD:?Set STREAMFORGE_DB_PASSWORD}@postgres:5432/streamforge?sslmode=disable", "-listen", ":8081", "-cluster-id", "local"]
+    ports:
+      - "127.0.0.1:8081:8081"
+    user: streamforge
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      postgres: {condition: service_healthy}
+    deploy:
+      resources:
+        limits: {cpus: "0.25", memory: 128M}
+
+volumes:
+  provider-postgres:
+  provider-redpanda:

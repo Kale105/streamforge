@@ -1,0 +1,57 @@
+services:
+  streamforge:
+    build: .
+    restart: unless-stopped
+    command:
+      - server
+      - -config
+      - /config/dataset.yaml
+      - -database-url
+      - postgres://streamforge:${STREAMFORGE_DB_PASSWORD:?Set STREAMFORGE_DB_PASSWORD}@postgres:5432/streamforge?sslmode=disable
+      - -listen
+      - :8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./examples/datasets/http-json/dataset.yaml:/config/dataset.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fake-source:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  fake-source:
+    build: .
+    restart: unless-stopped
+    entrypoint: ["fakesource"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8090/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: streamforge
+      POSTGRES_USER: streamforge
+      POSTGRES_PASSWORD: ${STREAMFORGE_DB_PASSWORD:?Set STREAMFORGE_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - streamforge-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U streamforge -d streamforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  streamforge-postgres:

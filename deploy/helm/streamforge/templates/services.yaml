@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamforge.fullname" . }}-provider-admin
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.providerAdmin.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "streamforge.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: provider-admin
+  ports:
+    - name: admin
+      port: {{ .Values.providerAdmin.service.port }}
+      targetPort: admin
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamforge.fullname" . }}-query
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.query.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "streamforge.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: query
+  ports:
+    - name: http
+      port: {{ .Values.query.service.port }}
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamforge.fullname" . }}-metrics
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "streamforge.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: query
+  ports:
+    - name: metrics
+      port: {{ .Values.query.service.metricsPort }}
+      targetPort: metrics

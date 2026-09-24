@@ -1,0 +1,135 @@
+{{- $root := . }}
+{{- range $role := list "collector" "processor" "sink" "dlqIndexer" "replay" "query" "providerAdmin" }}
+{{- $cfg := index $root.Values $role }}
+{{- $component := kebabcase $role }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "streamforge.fullname" $root }}-{{ $component }}
+  labels:
+    {{- include "streamforge.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  replicas: {{ $cfg.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "streamforge.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $component }}
+  template:
+    metadata:
+      annotations:
+        checksum/dataset-config: {{ include (print $root.Template.BasePath "/configmap.yaml") $root | sha256sum }}
+      labels:
+        {{- include "streamforge.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $component }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $root.Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: streamforge
+          image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag }}"
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $root.Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml $cfg.resources | nindent 12 }}
+          args:
+            {{- if eq $role "query" }}
+            - query
+            - -config
+            - /etc/streamforge/dataset.yaml
+            - -listen
+            - :8080
+            - -metrics-listen
+            - :9090
+            {{- else if eq $role "providerAdmin" }}
+            - provider-admin
+            - -listen
+            - :8081
+            - -cluster-id
+            - {{ $cfg.clusterID | quote }}
+            {{- else }}
+            - worker
+            - {{ $component }}
+            - -config
+            - /etc/streamforge/dataset.yaml
+            - -admin-addr
+            - :8081
+            {{- if eq $role "replay" }}
+            - -worker-id
+            - {{ $cfg.workerID | quote }}
+            {{- end }}
+            {{- end }}
+          env:
+            {{- if ne $role "processor" }}
+            - name: STREAMFORGE_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: {{ $root.Values.externalSecrets.database.name }}, key: {{ $root.Values.externalSecrets.database.key }}}}
+            {{- end }}
+            {{- if and (ne $role "query") (ne $role "providerAdmin") }}
+            - name: STREAMFORGE_KAFKA_BROKERS
+              valueFrom: {secretKeyRef: {name: {{ $root.Values.externalSecrets.kafka.name }}, key: {{ $root.Values.externalSecrets.kafka.brokersKey }}}}
+            - name: STREAMFORGE_KAFKA_TLS_ENABLED
+              valueFrom: {secretKeyRef: {name: {{ $root.Values.externalSecrets.kafka.name }}, key: {{ $root.Values.externalSecrets.kafka.tlsEnabledKey }}}}
+            - name: STREAMFORGE_KAFKA_TLS_SERVER_NAME
+              valueFrom: {secretKeyRef: {name: {{ $root.Values.externalSecrets.kafka.name }}, key: {{ $root.Values.externalSecrets.kafka.tlsServerNameKey }}}}
+            - name: STREAMFORGE_KAFKA_SASL_MECHANISM
+              valueFrom: {secretKeyRef: {name: {{ $root.Values.externalSecrets.kafka.name }}, key: {{ $root.Values.externalSecrets.kafka.saslMechanismKey }}}}
+            - name: STREAMFORGE_KAFKA_SASL_USERNAME
+              valueFrom: {secretKeyRef: {name: {{ $root.Values.externalSecrets.kafka.name }}, key: {{ $root.Values.externalSecrets.kafka.saslUsernameKey }}}}
+            - name: STREAMFORGE_KAFKA_SASL_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ $root.Values.externalSecrets.kafka.name }}, key: {{ $root.Values.externalSecrets.kafka.saslPasswordKey }}}}
+            - name: STREAMFORGE_KAFKA_TLS_CA_FILE
+              value: /etc/streamforge/kafka-tls/ca.pem
+            - name: STREAMFORGE_KAFKA_TLS_CLIENT_CERT_FILE
+              value: /etc/streamforge/kafka-tls/tls.crt
+            - name: STREAMFORGE_KAFKA_TLS_CLIENT_KEY_FILE
+              value: /etc/streamforge/kafka-tls/tls.key
+            {{- end }}
+          volumeMounts:
+            - name: dataset
+              mountPath: /etc/streamforge
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if and (ne $role "query") (ne $role "providerAdmin") }}
+            - name: kafka-tls
+              mountPath: /etc/streamforge/kafka-tls
+              readOnly: true
+            {{- end }}
+          {{- if eq $role "query" }}
+          ports: [{name: http, containerPort: 8080}, {name: metrics, containerPort: 9090}]
+          livenessProbe: {httpGet: {path: /healthz, port: http}, initialDelaySeconds: 10, periodSeconds: 15}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, initialDelaySeconds: 5, periodSeconds: 10}
+          {{- else if eq $role "providerAdmin" }}
+          ports: [{name: admin, containerPort: 8081}]
+          # provider-admin exposes no health route; TCP verifies listener availability.
+          livenessProbe: {tcpSocket: {port: admin}, initialDelaySeconds: 10, periodSeconds: 15}
+          readinessProbe: {tcpSocket: {port: admin}, initialDelaySeconds: 5, periodSeconds: 10}
+          {{- else }}
+          ports: [{name: admin, containerPort: 8081}]
+          livenessProbe: {httpGet: {path: /healthz, port: admin}, initialDelaySeconds: 10, periodSeconds: 15}
+          readinessProbe: {httpGet: {path: /readyz, port: admin}, initialDelaySeconds: 5, periodSeconds: 10}
+          {{- end }}
+      volumes:
+        - name: dataset
+          configMap:
+            name: {{ include "streamforge.fullname" $root }}-dataset
+            items:
+              - key: dataset.yaml
+                path: dataset.yaml
+              - key: raw.schema.json
+                path: schemas/raw.schema.json
+              - key: normalized.schema.json
+                path: schemas/normalized.schema.json
+        - name: tmp
+          emptyDir: {}
+        {{- if and (ne $role "query") (ne $role "providerAdmin") }}
+        - name: kafka-tls
+          secret:
+            secretName: {{ $root.Values.externalSecrets.kafkaTLS.name }}
+        {{- end }}
+---
+{{- end }}

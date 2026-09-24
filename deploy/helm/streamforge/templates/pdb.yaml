@@ -1,0 +1,22 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- $root := . }}
+{{- /* Only horizontally redundant consumer roles get a PDB. A singleton PDB
+      can block intentional maintenance rather than provide availability. */ -}}
+{{- range $role := list "processor" "sink" }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "streamforge.fullname" $root }}-{{ $role }}
+  labels:
+    {{- include "streamforge.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  minAvailable: {{ $root.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "streamforge.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $role }}
+---
+{{- end }}
+{{- end }}
